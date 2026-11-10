@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "docifi"
+version = "1.0.0"
+description = "DociFi - Loan Document Check: local loan-document conversion, splitting, labeling and verification"
+requires-python = ">=3.12"
+readme = "README.md"
+
+[project.scripts]
+docifi-cli = "pcs_tool.cli:main"
+
+[project.gui-scripts]
+docifi = "pcs_tool.ui.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+pcs_tool = ["ui/assets/*"]
+
+[tool.ruff]
+line-length = 125
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["F", "E9", "B", "SIM", "PL"]
+ignore = ["PLR0911", "PLR0912", "PLR0913", "PLR0915", "PLR0917", "PLR2004", "PLW0603", "PLW2901", "PLC0415",
+          "SIM108", "SIM112", "SIM115", "B008", "B905"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning", "ignore::FutureWarning"]

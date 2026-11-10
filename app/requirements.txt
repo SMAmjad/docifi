@@ -1,0 +1,23 @@
+# Runtime dependencies (pinned for reproducible builds; Python 3.14)
+pymupdf==2.1            # PDF render/split/merge (AGPL - isolated behind pdf_backend; see docs/decisions.md)
+pillow==13.0.0          # image loading and image->PDF
+opencv-python-headless==5.0.0.93  # scan cleanup: deskew, threshold, denoise
+numpy==2.5.4
+pytesseract==0.3.13     # wrapper for the local Tesseract OCR engine
+onnxruntime==1.31.1     # runs the second OCR reader's models locally
+pyclipper==1.4.0        # } needed by rapidocr-onnxruntime
+shapely==2.2.0          # }
+six==1.17.0             # }
+# rapidocr-onnxruntime==1.2.3 is installed separately with --no-deps (see README): its own
+# dependency list pulls in the full opencv-python, which conflicts with opencv-python-headless.
+rapidfuzz==3.14.6       # fuzzy name/address matching
+openpyxl==3.1.5         # Excel check sheet
+pyyaml==6.0.3           # rules/config files
+pywin32==312 ; sys_platform == "win32"   # Microsoft Word automation (DOCX -> PDF)
+pyside6==6.12.0         # desktop user interface
+reportlab==5.1.0        # plain-English documentation PDF
+
+# Development / packaging
+pytest==9.2.0
+ruff                    # code checks (configured in pyproject.toml)
+pyinstaller==6.22.3

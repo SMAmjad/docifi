@@ -1,0 +1,15 @@
+Copyright (c) 2026 Sheikh Muhammad Amjad. All rights reserved.
+
+DociFi - Loan Document Check was developed as a technical assessment for Point Capital Services.
+
+This source code and the compiled DociFi.exe are made available for review and evaluation only.
+No licence is granted to copy, modify, distribute, sublicense or sell this software, in whole or
+in part, without the prior written permission of the copyright holder.
+
+Third-party components keep their own licences; see THIRD_PARTY_NOTICES.md. In particular,
+PyMuPDF is licensed under the GNU AGPL v3, and commercial distribution of DociFi requires either a
+commercial PyMuPDF licence from Artifex or replacing the PDF backend (isolated in
+app/src/pcs_tool/engine/pdf_backend.py).
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED. IN NO EVENT SHALL
+THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING FROM THE USE OF THE SOFTWARE.

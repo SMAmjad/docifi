@@ -1,0 +1,449 @@
+# =============================================================================
+# Document type rules
+# -----------------------------------------------------------------------------
+# Every document type the tool understands is described here. To support a new
+# type, add a block below - no code change is required as long as the existing
+# field "kinds" are enough (person_name, company, address, date, year, last4,
+# text, heading, ssn).
+#
+# Keys
+#   name            Display name (shown in the check sheet).
+#   guide_rule      Guide 1 rule number (1-16) or null when the type is not in Guide 1.
+#   guide_type_names  Spellings of this type in Guide 1's "Type" column (self-test).
+#   category        identity | income | asset | property | contract | other
+#   classify        How a page is recognised:
+#       required_any  At least one of these phrases must appear on the page.
+#       keywords      phrase: weight. Phrases in the top part of the page count 1.5x.
+#       exclude       If any of these appear, the page is NOT this type.
+#       min_score     Minimum total weight to accept the type.
+#       priority      Tie-breaker (higher wins).
+#   assembly        How pages become documents:
+#       mode: single_page | contiguous | grouped
+#       continuation  Phrases that mark a page as belonging to the previous document.
+#       first_page    Phrases that mark the start of a new document of this type.
+#       group_by      (grouped mode) keys used to collect pages across files.
+#       page_order    (grouped mode) ordered list of page patterns used to restore order.
+#   fields          What to read. Each field has a kind and anchors (phrases to look near).
+#   persons         Which people appear on the document and which fields describe them.
+#   property_address  Field holding the subject-property address (property documents).
+#   label           Output file name template. Filters: |first |upper |title |date:<style>
+#   verify          Which of Name / DOB / SSN / Address this type is expected to carry.
+# =============================================================================
+
+types:
+
+  # ---------------------------------------------------------------- property
+  homeowners_insurance:
+    name: Homeowners Insurance
+    guide_rule: 1
+    guide_type_names: ["Homeowners Insurance/Evidence of Insurance/Declaration Page"]
+    category: property
+    classify:
+      required_any: ["insured location", "property located", "evidence of property insurance", "declarations page", "declaration page", "homeowners policy", "homeowner's policy"]
+      keywords: {"evidence of property insurance": 5, "declarations page": 4, "declaration page": 4, "insured location": 4, "proposed insured location": 5, "property located": 3, "dwelling": 2, "coverage a": 2, "policy number": 1, "premium": 1, "insured": 1, "homeowners": 2}
+      exclude: ["mortgage statement", "u.s. individual income tax return"]
+      min_score: 6
+    assembly: {mode: contiguous}
+    fields:
+      property_address: {kind: address, anchors: ["proposed insured location", "insured location", "property located at", "property located", "location of property", "property address"], lines_after: 3}
+    property_address: property_address
+    label: "{property_address|street} - HOI"
+    verify: {name: false, dob: false, ssn: false, address: property}
+
+  mortgage_statement:
+    name: Mortgage Statement
+    guide_rule: 2
+    guide_type_names: ["Mortgage Statement/Loan Statement"]
+    category: property
+    classify:
+      required_any: ["mortgage statement", "loan statement", "principal balance", "escrow balance", "amount due"]
+      keywords: {"mortgage statement": 5, "loan statement": 5, "property address": 3, "statement date": 3, "principal balance": 3, "escrow": 2, "payment due date": 2, "loan number": 2, "amount due": 1, "late fee": 1}
+      exclude: ["u.s. individual income tax return", "homeowners association"]
+      min_score: 7
+    assembly: {mode: contiguous}
+    fields:
+      property_address: {kind: address, anchors: ["property address", "property"], lines_after: 3}
+      statement_date: {kind: date, anchors: ["statement date", "statement as of", "date"], lines_after: 1, prefer_top: true}
+      borrower_name: {kind: person_name, anchors: ["borrower", "mortgagor"], lines_after: 1}
+    persons:
+      - {role: borrower, name: borrower_name}
+    property_address: property_address
+    label: "{property_address|street} - MTG STMT - {statement_date|date:M-D-YY}"
+    verify: {name: true, dob: false, ssn: false, address: property}
+
+  hoa_statement:
+    name: HOA Invoice / Statement
+    guide_rule: 3
+    guide_type_names: ["Homeowners Association Invoice or Statement"]
+    category: property
+    classify:
+      required_any: ["homeowners association", "owners association", "hoa", "community association", "assessment"]
+      keywords: {"homeowners association": 5, "owners association": 4, "community association": 4, "assessment": 3, "hoa": 3, "property address": 2, "invoice": 1, "statement": 1, "dues": 2}
+      exclude: ["mortgage statement", "addendum for property subject to mandatory membership"]
+      min_score: 6
+    assembly: {mode: contiguous}
+    fields:
+      property_address: {kind: address, anchors: ["property address", "property", "unit address", "service address"], lines_after: 3}
+    property_address: property_address
+    label: "{property_address|street} - HOA"
+    verify: {name: false, dob: false, ssn: false, address: property}
+
+  # ---------------------------------------------------------------- assets
+  bank_statement:
+    name: Bank Statement
+    guide_rule: 4
+    guide_type_names: ["Bank Statements"]
+    category: asset
+    classify:
+      required_any: ["statement period", "account number", "member number", "beginning balance", "ending balance", "statement cycle"]
+      keywords: {"beginning balance": 3, "ending balance": 3, "statement period": 3, "statement cycle": 3, "deposits": 2, "withdrawals": 2, "account number": 2, "member number": 2, "checking": 1, "savings": 1, "bank": 1, "account summary": 2}
+      exclude: ["u.s. individual income tax return", "wage and tax statement", "mortgage statement"]
+      min_score: 7
+    assembly: {mode: contiguous, first_page: ["page 1 of"]}
+    fields:
+      bank_name: {kind: bank, anchors: [], top_lines: 8}
+      account_last4: {kind: last4, anchors: ["account number", "account no", "acct", "member number", "account ending in"], lines_after: 1}
+      statement_month: {kind: period_month, anchors: ["statement period", "statement cycle", "for the period", "through", "to"], lines_after: 1}
+      holder_name: {kind: person_name, anchors: ["account holder", "primary account holder"], lines_after: 1}
+    persons:
+      - {role: account_holder, name: holder_name}
+    label: "ASSET - {bank_name} - {account_last4|last4} - {statement_month|date:Month}"
+    verify: {name: true, dob: false, ssn: false, address: residence}
+
+  # ---------------------------------------------------------------- identity
+  drivers_license:
+    name: Driver's License
+    guide_rule: 5
+    guide_type_names: ["Drivers License"]
+    category: identity
+    classify:
+      # US licences number their fields (3 DOB, 4a ISS, 4b EXP, 5 DD, 9 CLASS); these survive poor scans.
+      required_any: ["driver license", "driver's license", "drivers license", "driver lic", "identification card", "4a. iss", "4b. exp", "4a iss", "4b exp"]
+      keywords: {"driver license": 6, "driver's license": 6, "drivers license": 6, "4a. iss": 3, "4b. exp": 3, "4a iss": 3, "4b exp": 3, "director": 2, "dd:": 2, "class:": 2, "dob": 2, "endorsements": 1, "restrictions": 1, "hgt": 1, "eyes": 1}
+      exclude: ["wage and tax statement"]
+      min_score: 5
+    assembly: {mode: single_page, second_reading_first: true}   # photo IDs read best with the second reader
+    fields:
+      holder_name: {kind: id_name}
+      dob: {kind: id_dob}
+      holder_address: {kind: id_address}
+    persons:
+      - {role: holder, name: holder_name, dob: dob, address: holder_address}
+    label: "{holder_name|first} - OTHER - DL"
+    verify: {name: true, dob: true, ssn: false, address: residence}
+
+  ead_card:
+    name: Employment Authorization Card (Work Permit)
+    guide_rule: 6
+    guide_type_names: ["Work Permit Employment Authorization Card"]
+    category: identity
+    classify:
+      required_any: ["employment authorization"]
+      keywords: {"employment authorization": 8, "card expires": 2, "category": 1, "uscis": 2, "united states of america": 1}
+      min_score: 8
+    assembly: {mode: single_page, second_reading_first: true}   # photo IDs read best with the second reader
+    fields:
+      holder_name: {kind: id_name}
+      dob: {kind: id_dob}
+    persons:
+      - {role: holder, name: holder_name, dob: dob}
+    label: "{holder_name|first} - OTHER - EAD Work Permit"
+    verify: {name: true, dob: true, ssn: false, address: none}
+
+  passport:
+    name: Passport
+    guide_rule: 7
+    guide_type_names: ["Passport"]
+    category: identity
+    classify:
+      required_any: ["passport", "p<"]
+      keywords: {"passport": 6, "p<": 4, "given names": 2, "surname": 2, "nationality": 2, "date of birth": 1, "place of birth": 2}
+      exclude: ["employment authorization", "permanent resident"]
+      min_score: 6
+    assembly: {mode: single_page, second_reading_first: true}   # photo IDs read best with the second reader
+    fields:
+      holder_name: {kind: id_name}
+      dob: {kind: id_dob}
+    persons:
+      - {role: holder, name: holder_name, dob: dob}
+    label: "{holder_name|first} - OTHER - Passport"
+    verify: {name: true, dob: true, ssn: false, address: none}
+
+  green_card:
+    name: Permanent Resident Card (Green Card)
+    guide_rule: 8
+    guide_type_names: ["Permanent Resident Card"]
+    category: identity
+    classify:
+      required_any: ["permanent resident"]
+      keywords: {"permanent resident": 8, "resident since": 3, "uscis": 2, "category": 1}
+      min_score: 8
+    assembly: {mode: single_page, second_reading_first: true}   # photo IDs read best with the second reader
+    fields:
+      holder_name: {kind: id_name}
+      dob: {kind: id_dob}
+    persons:
+      - {role: holder, name: holder_name, dob: dob}
+    label: "{holder_name|first} - OTHER - Green Card Perm Resident Alien"
+    verify: {name: true, dob: true, ssn: false, address: none}
+
+  ssn_card:
+    name: Social Security Card
+    guide_rule: null          # Not in Guide 1 - added because it is a strong SSN source.
+    guide_type_names: []
+    category: identity
+    classify:
+      required_any: ["this number has been established for", "social security"]
+      keywords: {"this number has been established for": 8, "social security": 4, "signature": 1}
+      exclude: ["wage and tax statement", "u.s. individual income tax return", "schedule", "form 1040"]
+      min_score: 6
+    assembly: {mode: single_page}
+    fields:
+      holder_name: {kind: person_name, anchors: ["this number has been established for", "established for"], lines_after: 2, join_lines: 2}
+      holder_ssn: {kind: ssn, anchors: [], search_all: true, strict: false}   # the card carries only one number
+    persons:
+      - {role: holder, name: holder_name, ssn: holder_ssn}
+    label: "{holder_name|first} - OTHER - SSN Card"
+    verify: {name: true, dob: false, ssn: true, address: none}
+
+  # ---------------------------------------------------------------- income
+  paystub:
+    name: Paystub
+    guide_rule: 9
+    guide_type_names: ["Paystub/Payslip"]
+    category: income
+    classify:
+      required_any: ["pay date", "check date", "pay period", "earnings statement", "pay stub", "paystub", "payslip", "net pay"]
+      keywords: {"pay date": 4, "check date": 4, "pay period": 3, "earnings statement": 4, "net pay": 3, "gross pay": 2, "ytd": 2, "year to date": 2, "deductions": 1, "hours": 1, "rate": 1}
+      exclude: ["wage and tax statement", "u.s. individual income tax return", "w-2 income forms summary"]
+      min_score: 7
+    assembly: {mode: contiguous}
+    fields:
+      employee_name: {kind: person_name, anchors: ["employee name", "employee", "pay to the order of", "name"], lines_after: 1}
+      employer: {kind: company, anchors: ["company", "employer"], lines_after: 1, top_lines: 5}
+      pay_date: {kind: date, anchors: ["pay date", "check date", "advice date", "payment date"], lines_after: 1}
+      employee_ssn: {kind: ssn, anchors: ["ssn", "social security"], lines_after: 1}
+      employee_address: {kind: address, anchors: ["employee name", "employee"], lines_after: 4}
+    persons:
+      - {role: employee, name: employee_name, ssn: employee_ssn, address: employee_address}
+    label: "{employee_name|first} - INCOME - PAYSTUB - {employer} - {pay_date|date:MM-DD-YY}"
+    verify: {name: true, dob: false, ssn: optional, address: residence}
+
+  business_tax_return:
+    name: Business Tax Return (1065 / 1120 / 1120S)
+    guide_rule: 10
+    guide_type_names: ["Business Tax Returns  U.S. RETURN OF PARTNERSHIP INCOME OR U.S. Income Tax Return for an S Corporation", "Business Tax Returns"]
+    category: income
+    classify:
+      required_any: ["u.s. return of partnership income", "u.s. income tax return for an s corporation", "u.s. corporation income tax return"]
+      keywords: {"u.s. return of partnership income": 8, "u.s. income tax return for an s corporation": 8, "u.s. corporation income tax return": 8, "form 1065": 3, "form 1120-s": 3, "form 1120s": 3, "form 1120": 2, "employer identification number": 1}
+      exclude: ["schedule k-1"]
+      min_score: 8
+    assembly: {mode: contiguous}
+    fields:
+      form: {kind: form_number, options: {"1065": ["return of partnership income", "form 1065"], "1120S": ["for an s corporation", "1120-s", "1120s"], "1120": ["corporation income tax return", "form 1120"]}}
+      business_name: {kind: company, anchors: ["name of partnership", "name:", "name"], lines_after: 1}
+      year: {kind: year, anchors: ["calendar year", "tax year", "form 1065", "form 1120"], search_all: true}
+    label: "INCOME - {form} - {business_name} - {year}"
+    verify: {name: false, dob: false, ssn: false, address: none}
+
+  personal_tax_return:
+    name: Personal Tax Return (Form 1040)
+    guide_rule: 11
+    guide_type_names: ["Personal Tax Returns  U.S. RETURN OF PARTNERSHIP INCOME OR U.S. Income Tax Return for an S Corporation", "Personal Tax Returns"]
+    category: income
+    classify:
+      # A 1040 "package" = the 1040 itself plus its schedules, forms and the
+      # tax preparer's cover sheets. All of these pages are grouped together.
+      required_any: ["form 1040", "(form 1040)", "1040-sr", "u.s. individual income tax return", "individual filer information", "main information worksheet", "electronic filing information (1040)", "state information worksheet", "form 8879", "e-file signature authorization", "three year tax comparison", "income forms summary", "tax year:", "form 8995", "form 4562", "form 8283", "depreciation and amortization", "noncash charitable contributions", "supporting statements for form", "qualified business income deduction", "self-employment tax", "deprec", "profit or loss from business", "schedule se", "schedule c", "schedule eic", "schedule 8812", "form 8962", "form 8867", "paid preparer's due diligence", "premium tax credit", "earned income credit", "1545-0074", "1545-0172", "1545-2294"]
+      keywords: {"u.s. individual income tax return": 8, "your first name and middle initial": 4, "form 1040": 3, "(form 1040)": 3, "1040-sr": 2, "form 4562": 3, "form 8283": 3, "form 8995": 3, "form 8879": 3, "form 8962": 3, "form 8867": 3, "form 8812": 3, "schedule c": 2, "schedule se": 2, "schedule eic": 2, "schedule 8812": 2, "deprec": 3, "1545-0074": 3, "1545-0172": 3, "1545-2294": 3, "schedule": 1, "attachment": 1, "sequence no": 1, "name(s) shown on": 2, "tax year:": 4, "process date": 3, "preparer": 1, "income forms summary": 6, "three year tax comparison": 6, "individual filer information": 5, "main information worksheet": 5, "state information worksheet": 5, "electronic filing information": 5, "e-file signature authorization": 6, "depreciation and amortization": 4, "noncash charitable contributions": 4, "supporting statements for form": 4, "qualified business income deduction": 4, "self-employment tax": 3, "profit or loss from business": 4, "earned income credit": 3, "premium tax credit": 3, "due diligence": 3, "itemized deductions": 3, "additional taxes": 3, "adjustments to income": 3}
+      exclude: ["wage and tax statement 20", "employer's name, address, and zip code", "u.s. return of partnership income", "u.s. income tax return for an s corporation", "shareholder's name, address", "partner's name, address"]
+      min_score: 3
+      priority: 1
+    assembly:
+      mode: grouped
+      group_by: [folder, year]
+      page_order:
+        - {id: preparer_cover, match: ["tax year:", "process date"]}
+        - {id: comparison, match: ["three year tax comparison"]}
+        - {id: w2_summary, match: ["income forms summary"]}
+        - {id: f1040_p1, match: ["u.s. individual income tax return"], not: ["page 2"]}
+        - {id: f1040_p2, match: ["form 1040 ("]}
+        - {id: sched_1, match: ["schedule 1 ", "schedule 1\n", "schedule 1 (form 1040)"], not: ["schedule 1-a"]}
+        - {id: sched_1a, match: ["schedule 1-a", "additional deductions"]}
+        - {id: sched_2, match: ["schedule 2", "additional taxes"]}
+        - {id: sched_3, match: ["schedule 3"]}
+        - {id: sched_a, match: ["schedule a", "itemized deductions"]}
+        - {id: sched_b, match: ["schedule b"]}
+        - {id: sched_c, match: ["schedule c", "profit or loss from business"]}
+        - {id: sched_se, match: ["schedule se", "self-employment tax"]}
+        - {id: sched_eic, match: ["schedule eic", "earned income credit"]}
+        - {id: sched_8812, match: ["schedule 8812", "qualifying children"]}
+        - {id: f4562, match: ["form 4562", "depreciation and amortization", "deprec"]}
+        - {id: f8283, match: ["form 8283", "noncash charitable"]}
+        - {id: f8995, match: ["form 8995", "qualified business income deduction"]}
+        - {id: f8962, match: ["form 8962", "premium tax credit"]}
+        - {id: f8867, match: ["form 8867", "due diligence"]}
+        - {id: f8879, match: ["form 8879", "e-file signature authorization"]}
+        - {id: worksheets, match: ["worksheet", "individual filer information", "electronic filing information"]}
+      year_patterns:
+        - 'tax year:?\s*(20\d\d)'
+        - 'income tax return\s*(20\d\d)'
+        - '1040\s+u\.s\. individual income tax return\s*(20\d\d)'
+        - 'form 1040\s*\((20\d\d)\)'
+        - '\(form 1040\)\s*\(?(20\d\d)'
+        - 'schedule [\w-]+ \(form 1040\)\s*\(?(20\d\d)'
+        - 'for the year jan\. ?1-dec\. ?31,\s*(20\d\d)'
+        - '1545-0074\s*(20\d\d)'
+        - '1545-0172\s*(20\d\d)'
+        - '1545-2294\s*(20\d\d)'
+        - '(20\d\d)\s*attachment'
+        - 'form \d{4}[a-z-]* \((20\d\d)\)'
+        - 'tax year\s*(20\d\d)'
+        - 'lived apart from your spouse for the last 6 months of (20\d\d)'
+    fields:
+      primary_name: {kind: tax_primary_name}
+      spouse_name: {kind: tax_spouse_name}
+      primary_ssn: {kind: tax_primary_ssn}
+      spouse_ssn: {kind: tax_spouse_ssn}
+      primary_dob: {kind: tax_primary_dob}
+      spouse_dob: {kind: tax_spouse_dob}
+      home_address: {kind: tax_address}
+      year: {kind: group_year}
+    persons:
+      - {role: primary taxpayer, name: primary_name, ssn: primary_ssn, dob: primary_dob, address: home_address}
+      - {role: spouse, name: spouse_name, ssn: spouse_ssn, dob: spouse_dob, address: home_address}
+    label: "INCOME - 1040 - {primary_name|first} - {year}"
+    verify: {name: true, dob: optional, ssn: true, address: residence}
+
+  k1:
+    name: Schedule K-1
+    guide_rule: 12
+    guide_type_names: ["Business K1"]
+    category: income
+    classify:
+      required_any: ["shareholder's name", "partner's name", "shareholder's share of", "partner's share of"]
+      keywords: {"schedule k-1": 8, "shareholder's name": 4, "partner's name": 4, "corporation's name": 3, "partnership's name": 3, "share of income": 2, "share of current year income": 3}
+      exclude: ["name(s) shown on", "(form 1040)"]
+      min_score: 12
+      priority: 2
+    assembly: {mode: contiguous}
+    fields:
+      company: {kind: company, anchors: ["corporation's name, address", "partnership's name, address", "corporation's name", "partnership's name"], lines_after: 1}
+      partner_name: {kind: person_name, anchors: ["shareholder's name, address", "partner's name, address", "shareholder's name", "partner's name"], lines_after: 2}
+      partner_ssn: {kind: ssn, anchors: ["shareholder's identifying number", "partner's ssn or tin", "identifying number"], lines_after: 1, search_all: true}
+      year: {kind: year, anchors: ["schedule k-1", "calendar year", "tax year"], search_all: true}
+      partner_address: {kind: address, anchors: ["shareholder's name, address", "partner's name, address"], lines_after: 4}
+    persons:
+      - {role: shareholder / partner, name: partner_name, ssn: partner_ssn, address: partner_address}
+    label: "{partner_name|first} - INCOME - K1 - {company} - {year}"
+    verify: {name: true, dob: false, ssn: true, address: residence}
+
+  w2:
+    name: W-2 Wage and Tax Statement
+    guide_rule: 13
+    guide_type_names: ["W2 Wage and Tax Statement"]
+    category: income
+    classify:
+      required_any: ["wage and tax statement", "w-2", "1545-0008", "employer's name, address", "instructions for employee"]
+      keywords: {"wage and tax statement": 6, "1545-0008": 5, "employer's name, address": 4, "employee's name": 3, "employee's first name": 3, "employer identification number": 2, "employee's social security number": 2, "employees ssn": 2, "w-2": 2, "copy b": 2, "federal income tax withheld": 1, "social security wages": 1, "medicare wages": 1, "instructions for employee": 4}
+      exclude: ["income forms summary", "u.s. individual income tax return", "attach to form 1040", "schedule c", "name(s) shown on", "instructions for employee", "envelope 1 of"]
+      min_score: 6
+      priority: 3
+    assembly:
+      mode: contiguous
+      first_page: ["wage and tax statement", "employer's name, address"]
+      continuation: ["instructions for employee", "envelope 1 of", "page 1 of 1 (envelope"]
+      one_per_page: true
+    fields:
+      employee_name: {kind: w2_employee_name}
+      employer: {kind: company, anchors: ["employer's name, address, and zip code", "employer's name, address", "employer's name"], lines_after: 3}
+      employee_ssn: {kind: ssn, anchors: ["employee's social security number", "employees ssn", "employee's ssn", "social security number"], lines_after: 2, search_all: true}
+      employee_address: {kind: w2_employee_address}
+      year: {kind: year, anchors: ["wage and tax statement", "w-2", "form w-2"], lines_after: 2, search_all: true}
+    persons:
+      - {role: employee, name: employee_name, ssn: employee_ssn, address: employee_address}
+    label: "{employee_name|first} - INCOME - W2 - {employer} - {year}"
+    verify: {name: true, dob: false, ssn: true, address: residence}
+
+  form_1099:
+    name: Form 1099
+    guide_rule: 14
+    guide_type_names: ["Form 1099"]
+    category: income
+    classify:
+      required_any: ["for calendar year", "payer's name", "payer's tin", "recipient's name"]
+      keywords: {"1099": 3, "for calendar year": 4, "payer's name": 4, "recipient's name": 4, "payer's tin": 3, "recipient's tin": 3, "payee's name": 3, "nonemployee compensation": 3, "miscellaneous": 1}
+      exclude: ["u.s. individual income tax return", "wage and tax statement", "name(s) shown on"]
+      min_score: 8
+    assembly: {mode: contiguous}
+    fields:
+      payer: {kind: company, anchors: ["payer's name, street address", "payer's name"], lines_after: 1}
+      recipient_name: {kind: person_name, anchors: ["recipient's name", "payee's name"], lines_after: 1}
+      recipient_ssn: {kind: ssn, anchors: ["recipient's tin", "recipient's identification number"], lines_after: 1, search_all: true}
+      year: {kind: year, anchors: ["for calendar year", "calendar year"], lines_after: 1, search_all: true}
+      recipient_address: {kind: address, anchors: ["street address (including apt. no.)", "recipient's name"], lines_after: 3}
+    persons:
+      - {role: recipient, name: recipient_name, ssn: recipient_ssn, address: recipient_address}
+    label: "{recipient_name|first} - INCOME - 1099 - {payer} - {year}"
+    verify: {name: true, dob: false, ssn: true, address: residence}
+
+  # ---------------------------------------------------------------- contracts
+  purchase_contract:
+    name: Purchase Agreement / Contract
+    guide_rule: 15
+    guide_type_names: ["Purchase Agreement/Purchase Contract"]
+    category: contract
+    classify:
+      required_any: ["purchase agreement", "purchase contract", "residential contract", "contract of sale", "sales contract"]
+      keywords: {"purchase agreement": 6, "purchase contract": 6, "residential contract": 6, "parties": 2, "property": 2, "seller": 2, "buyer": 2, "sales price": 3, "earnest money": 3}
+      exclude: ["addendum", "notice to purchasers"]
+      min_score: 8
+    assembly: {mode: contiguous}
+    fields:
+      property_address: {kind: address, anchors: ["property:", "address:", "property"], lines_after: 3}
+      buyer_name: {kind: person_name, anchors: ["buyer"], lines_after: 1}
+    persons:
+      - {role: buyer, name: buyer_name}
+    property_address: property_address
+    label: "CONTRACT - {property_address|street}"
+    verify: {name: true, dob: false, ssn: false, address: property}
+
+  contract_addendum:
+    name: Purchase Contract Addendum / Notice
+    guide_rule: 16
+    guide_type_names: ["Purchase Agreement/Purchase Contract ADDENDUMS"]
+    category: contract
+    classify:
+      required_any: ["addendum", "notice to purchasers"]
+      keywords: {"addendum": 6, "notice to purchasers": 6, "concerning the property at": 4, "contract": 1, "seller": 1, "buyer": 1}
+      min_score: 7
+      priority: 2
+    assembly: {mode: contiguous}
+    fields:
+      addendum_name: {kind: heading, keywords: ["addendum", "notice to purchasers"], top_lines: 8}
+      property_address: {kind: address, anchors: ["concerning the property at", "property at", "address of property", "property"], lines_after: 2}
+    property_address: property_address
+    label: "CONTRACT - {addendum_name|title} - {property_address|street}"
+    verify: {name: false, dob: false, ssn: false, address: property}
+
+# Bank short names used in labels (the Guide uses short brand names).
+bank_aliases:
+  "jpmorgan chase": Chase
+  "chase": Chase
+  "wells fargo": Wells Fargo
+  "capital one": CapOne
+  "amegy": Amegy
+  "charles schwab": Charles Schwab
+  "schwab": Charles Schwab
+  "bank of america": Bank of America
+  "robinhood": Robinhood
+  "pioneer": Pioneer
+  "cetera": Cetera
+  "nizari": Nizari
+  "frost": Frost
+  "citibank": Citi
+  "us bank": US Bank
+  "pnc": PNC
+  "truist": Truist
+  "texas capital": Texas Capital

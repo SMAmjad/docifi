@@ -1,0 +1,55 @@
+# ------------------------------------------------------------------
+# PRIVACY: real client data and every tool output must never be committed.
+# ------------------------------------------------------------------
+Data/
+data/
+input/
+output/
+**/output/
+*.pcs_output
+
+# Any spreadsheet or PDF outside docs/ is treated as potentially sensitive.
+*.xlsx
+*.xls
+*.csv
+!docs/**/*.xlsx
+*.pdf
+!docs/**/*.pdf
+*.jpg
+*.jpeg
+*.png
+*.tif
+*.tiff
+!docs/**/*.png
+!app/src/pcs_tool/ui/assets/*.png
+*.docx
+*.doc
+
+# OCR cache and run artefacts
+.pcs_cache/
+**/.pcs_cache/
+*.jsonl
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# Packaging
+build/
+dist/
+*.spec.bak
+installer_output/
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+.DS_Store
