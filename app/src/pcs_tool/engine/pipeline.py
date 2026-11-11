@@ -9,6 +9,7 @@ recorded and the item goes to the review queue.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -59,6 +60,48 @@ def validate_folders(input_dir: Path, output_dir: Path) -> None:
                             "or a folder previously created by this tool.")
 
 
+def as_input_list(input_dir: Path | str | list | tuple) -> list[Path]:
+    """One folder or several; the same folder chosen twice counts once."""
+    raw = list(input_dir) if isinstance(input_dir, (list, tuple)) else [input_dir]
+    out: list[Path] = []
+    seen: set[str] = set()
+    for p in raw:
+        p = Path(p)
+        key = str(p.resolve()).lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(p)
+    return out
+
+
+def validate_inputs(inputs: list[Path], output_dir: Path) -> None:
+    if not inputs:
+        raise PipelineError("Choose at least one documents folder.")
+    for inp in inputs:
+        validate_folders(inp, output_dir)
+    res = [p.resolve() for p in inputs]
+    for i, a in enumerate(res):
+        for b in res[i + 1:]:
+            if a.is_relative_to(b) or b.is_relative_to(a):
+                raise PipelineError("One chosen documents folder is inside another chosen folder. "
+                                    "Choose each folder only once.")
+
+
+def folder_labels(inputs: list[Path]) -> list[str]:
+    """Output folder name per input folder (its own name; '(2)' added when two names are the same)."""
+    labels: list[str] = []
+    used: set[str] = set()
+    for d in inputs:
+        base = safe_filename(d.resolve().name or "Documents")
+        label, n = base, 2
+        while label.lower() in used:
+            label = f"{base} ({n})"
+            n += 1
+        used.add(label.lower())
+        labels.append(label)
+    return labels
+
+
 def _sha256(path: Path) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as fh:
@@ -69,7 +112,9 @@ def _sha256(path: Path) -> str:
 
 # --------------------------------------------------------------------------- steps
 
-def discover(input_dir: Path, cfg: Config) -> list[SourceFile]:
+def discover(input_dir: Path, cfg: Config, label: str | None = None, start: int = 0) -> list[SourceFile]:
+    """Files in one documents folder. With ``label`` (several folders in one run) every file
+    belongs to that folder, and file IDs continue from ``start``."""
     exts = {e.lower() for e in cfg.settings.get("processing.supported_extensions", [])}
     ignore = {n.lower() for n in cfg.settings.get("processing.ignore_names", [])}
     files: list[SourceFile] = []
@@ -77,8 +122,11 @@ def discover(input_dir: Path, cfg: Config) -> list[SourceFile]:
         if not path.is_file() or path.name.lower() in ignore or path.name.startswith(("~$", ".")):
             continue
         rel = path.relative_to(input_dir)
-        folder = rel.parts[0] if len(rel.parts) > 1 else ""
-        sf = SourceFile(file_id=f"F{len(files) + 1:03d}", path=path, relative=str(rel), folder=folder,
+        if label is not None:
+            folder, relative = label, str(Path(label) / rel)
+        else:
+            folder, relative = (rel.parts[0] if len(rel.parts) > 1 else ""), str(rel)
+        sf = SourceFile(file_id=f"F{start + len(files) + 1:03d}", path=path, relative=relative, folder=folder,
                         ext=path.suffix.lower())
         if sf.ext in (".xlsx", ".xls", ".xlsm", ".csv"):
             sf.skipped = "Skipped: spreadsheet (not a client document)."
@@ -98,7 +146,7 @@ def _worker_count(cfg: Config, override: int | None) -> int:
 
 
 def run_pipeline(
-    input_dir: Path | str,
+    input_dir: Path | str | list,
     output_dir: Path | str,
     cfg: Config | None = None,
     progress: ProgressFn | None = None,
@@ -107,10 +155,14 @@ def run_pipeline(
     redact: bool | None = None,
     guide_path: Path | None = None,
 ) -> RunResult:
+    """``input_dir`` may be one folder or a list of folders. Several folders are processed in ONE run
+    (one reading pass over all pages); each folder gets its own documents and check sheet."""
     t0 = time.time()
     cfg = cfg or load_config()
-    input_dir, output_dir = Path(input_dir), Path(output_dir)
-    validate_folders(input_dir, output_dir)
+    inputs, output_dir = as_input_list(input_dir), Path(output_dir)
+    validate_inputs(inputs, output_dir)
+    multi = len(inputs) > 1
+    labels = folder_labels(inputs) if multi else []
     progress = progress or (lambda *a: None)
     cancel = cancel or threading.Event()
 
@@ -137,8 +189,13 @@ def run_pipeline(
 
     # 1. discover + fingerprint ------------------------------------------------
     progress("Finding files", 0, 1, "Looking for documents in the input folder")
-    files = discover(input_dir, cfg)
-    seen: dict[str, str] = {}
+    if multi:
+        files: list[SourceFile] = []
+        for d, label in zip(inputs, labels):
+            files += discover(d, cfg, label=label, start=len(files))
+    else:
+        files = discover(inputs[0], cfg)
+    seen: dict[tuple[str, str], str] = {}
     for sf in files:
         if sf.error or sf.skipped:
             audit.event("ingest", "skipped", file=sf.file_id, reason=sf.error or sf.skipped)
@@ -148,12 +205,13 @@ def run_pipeline(
         except OSError:
             sf.error = "File could not be opened (it may be in use or damaged)."
             continue
-        if sf.sha256 in seen:
-            sf.duplicate_of = seen[sf.sha256]
+        key = (sf.folder if multi else "", sf.sha256)  # each folder keeps its own copy of a shared file
+        if key in seen:
+            sf.duplicate_of = seen[key]
             audit.event("ingest", "exact_duplicate", file=sf.file_id, duplicate_of=sf.duplicate_of)
         else:
-            seen[sf.sha256] = sf.file_id
-    audit.event("ingest", "found", files=len(files))
+            seen[key] = sf.file_id
+    audit.event("ingest", "found", files=len(files), folders=len(inputs))
 
     # 2. convert ------------------------------------------------------------------
     conv_dir = run_dir / "converted"
@@ -176,28 +234,30 @@ def run_pipeline(
     cache = OcrCache(output_dir / ".pcs_cache", ocr_settings)
     jobs: list[tuple[SourceFile, int]] = [(sf, i) for sf in files if sf.pdf_path for i in range(sf.page_count)]
     readings: dict[tuple[str, int], PageReading] = {}
-    todo = []
+    todo: dict[tuple[str, int], list[tuple[SourceFile, int]]] = {}  # the same file in two folders is read once
     for sf, i in jobs:
         hit = cache.get(sf.sha256, i)
         if hit:
             readings[(sf.file_id, i)] = hit
         else:
-            todo.append((sf, i))
+            todo.setdefault((sf.sha256, i), []).append((sf, i))
     done = len(readings)
     progress("Reading pages", done, len(jobs), f"{done} pages already read earlier (cache)")
     if todo and not cancel.is_set():
         n_workers = min(_worker_count(cfg, workers), len(todo))
         with ProcessPoolExecutor(max_workers=n_workers) as pool:
-            futs = {pool.submit(read_page, sf.pdf_path, i, ocr_settings): (sf, i) for sf, i in todo}
+            futs = {pool.submit(read_page, grp[0][0].pdf_path, grp[0][1], ocr_settings): grp for grp in todo.values()}
             for fut in as_completed(futs):
-                sf, i = futs[fut]
+                grp = futs[fut]
+                sf, i = grp[0]
                 try:
                     r = fut.result()
                 except Exception as exc:  # noqa: BLE001
                     r = PageReading("", "failed", 0.0, 0, "", f"Page could not be read ({type(exc).__name__}).")
-                readings[(sf.file_id, i)] = r
+                for k, (sf_k, i_k) in enumerate(grp):
+                    readings[(sf_k.file_id, i_k)] = r if k == 0 else copy.copy(r)
                 cache.put(sf.sha256, i, r)
-                done += 1
+                done += len(grp)
                 progress("Reading pages", done, len(jobs), f"Read page {i + 1} of {sf.file_id}")
                 if cancel.is_set():
                     for f in futs:
@@ -288,17 +348,22 @@ def run_pipeline(
                     confidence=d.confidence, label_complete=d.label_complete)
 
     # 7. duplicates (never deleted) ----------------------------------------------------------
-    _flag_duplicates(docs, files, audit)
+    # Several folders: each folder is its own borrower file - duplicates and people are looked for inside it.
+    groups = [[d for d in docs if d.folder == label] for label in labels] if multi else [docs]
+    for g in groups:
+        _flag_duplicates(g, files, audit)
 
     # 8. verification -----------------------------------------------------------------------
     progress("Checking Name / DOB / SSN / Address", 1, 1, "Comparing documents")
-    people = verify([d for d in docs if d.type_id], cfg)
+    people: list[Person] = []
+    for g in groups:
+        people += _renumber_people(verify([d for d in g if d.type_id], cfg), g, start=len(people))
     for d in docs:
         for c in d.checks:
             audit.event("verify", "check", doc=d.doc_id, person=c.person, field_name=c.field, status=c.status.value)
 
     # 9. write labeled documents -------------------------------------------------------------
-    _write_documents(docs, people, files, run_dir, cfg, progress, audit)
+    _write_documents(docs, people, files, run_dir, cfg, progress, audit, per_folder=multi)
 
     # 10. report -------------------------------------------------------------------------------
     result = RunResult(run_dir=run_dir, files=files, pages=pages, documents=docs,
@@ -316,8 +381,25 @@ def run_pipeline(
             audit.event("selftest", "skipped", reason=type(exc).__name__)
             progress("Writing check sheet", 1, 1, "Guide/rules file could not be read - naming test skipped")
     redact_flag = bool(cfg.settings.get("output.redact_personal_values", False)) if redact is None else redact
-    result.sheet_path = write_check_sheet(result, people, cfg, run_dir / "Check_Sheet.xlsx",
-                                          redact=redact_flag, guide_results=guide_results)
+    if multi:
+        result.stats["folders"] = {}
+        folder_of = {sf.file_id: sf.folder for sf in files}
+        for k, label in enumerate(labels, start=1):
+            progress("Writing check sheet", k, len(labels), f"Check sheet {k} of {len(labels)}")
+            sub = RunResult(run_dir=run_dir, files=[f for f in files if f.folder == label],
+                            pages=[p for p in pages if folder_of[p.file_id] == label],
+                            documents=[d for d in docs if d.folder == label],
+                            persons={p.person_id: {"person": p} for p in people if p.records[0][0].folder == label},
+                            duration_s=result.duration_s)
+            sub.stats = _stats(sub)
+            sub_people = [v["person"] for v in sub.persons.values()]
+            result.sheets[label] = write_check_sheet(sub, sub_people, cfg, run_dir / label / "Check_Sheet.xlsx",
+                                                     redact=redact_flag, guide_results=guide_results)
+            result.stats["folders"][label] = {k2: v for k2, v in sub.stats.items() if k2 != "seconds"}
+        result.sheet_path = next(iter(result.sheets.values()))
+    else:
+        result.sheet_path = write_check_sheet(result, people, cfg, run_dir / "Check_Sheet.xlsx",
+                                              redact=redact_flag, guide_results=guide_results)
     (run_dir / "run_summary.json").write_text(json.dumps(result.stats, indent=2), encoding="utf-8")
     result.log_path = run_dir / "logs" / "audit.jsonl"
     audit.event("run", "finished", **{k: v for k, v in result.stats.items() if isinstance(v, (int, float))})
@@ -427,17 +509,33 @@ def _flag_duplicates(docs: list[Document], files: list[SourceFile], audit: Audit
             audit.event("duplicates", "flagged", doc=d.doc_id, duplicate_of=d.duplicate_of)
 
 
+def _renumber_people(group_people: list[Person], docs: list[Document], start: int) -> list[Person]:
+    """People of one folder get run-wide unique IDs (P1, P2 ... continue across folders)."""
+    mapping = {p.person_id: f"P{start + k}" for k, p in enumerate(group_people, start=1)}
+    if all(old == new for old, new in mapping.items()):
+        return group_people
+    for p in group_people:
+        p.person_id = mapping[p.person_id]
+        for _, rec in p.records:
+            rec.person_id = p.person_id
+    for d in docs:
+        for c in d.checks:
+            c.person = mapping.get(c.person, c.person)
+    return group_people
+
+
 def _primary_person(d: Document, people: list[Person]) -> Person | None:
     ids = [r.person_id for r in d.persons if r.person_id]
     return next((p for p in people if ids and p.person_id == ids[0]), None)
 
 
-def _write_documents(docs, people, files, run_dir: Path, cfg: Config, progress, audit) -> None:
+def _write_documents(docs, people, files, run_dir: Path, cfg: Config, progress, audit, per_folder: bool = False) -> None:
+    """Single folder: run/documents/<person>/. Several folders: run/<folder>/documents/<person>/."""
     file_map = {sf.file_id: sf for sf in files}
-    out_root = run_dir / "documents"
     used: set[str] = set()
     for k, d in enumerate(docs, start=1):
         progress("Saving labeled documents", k, len(docs), f"Document {d.doc_id}")
+        out_root = (run_dir / d.folder / "documents") if per_folder else (run_dir / "documents")
         if not d.type_id:
             folder = out_root / "_Needs review - unrecognised pages"
         else:
@@ -462,6 +560,7 @@ def _write_documents(docs, people, files, run_dir: Path, cfg: Config, progress, 
             audit.event("output", "failed", doc=d.doc_id, reason=type(exc).__name__)
     for sf in files:  # exact duplicate files: listed, never processed twice, never deleted
         if sf.duplicate_of:
+            out_root = (run_dir / sf.folder / "documents") if per_folder else (run_dir / "documents")
             dup_dir = out_root / "_Duplicate files (not processed)"
             dup_dir.mkdir(parents=True, exist_ok=True)
             if sf.pdf_path is None:

@@ -212,6 +212,25 @@ def _field_checks(d: Document, person_id: str | None) -> dict[str, Check]:
     return {c.field: c for c in d.checks if c.person == (person_id or "") or (person_id and c.person == person_id)}
 
 
+def _role_text(ctx: _Ctx, d: Document, person_id: str | None) -> str:
+    """How this person appears on the document, and who else is on it.
+
+    'Spouse - joint with Shaizad K Momin', 'Primary taxpayer - joint with Anisha S Momin', 'Employee', 'Holder'.
+    """
+    if not person_id:
+        return ""
+    rec = next((r for r in d.persons if r.person_id == person_id), None)
+    if rec is None:
+        return ""
+    role = rec.role[:1].upper() + rec.role[1:]
+    others = [ctx.person_name(r.person_id) for r in d.persons if r.person_id and r.person_id != person_id]
+    others = [o for o in dict.fromkeys(others) if o]
+    if not others:
+        return role
+    link = "joint with" if d.type_id == "personal_tax_return" else "with"
+    return f"{role} - {link} {', '.join(others)}"
+
+
 def _row_result(d: Document, checks: dict[str, Check]) -> Status:
     st = [c.status for c in checks.values()] + [c.status for c in d.checks if c.field == "Property address"]
     if Status.ISSUE in st:
@@ -264,8 +283,9 @@ def document_rows(result: RunResult, people: list[Person], cfg: Config, redact: 
         st = {f: (m["checks"][f].status if f in m["checks"] else Status.NOT_APPLICABLE)
               for f in ("Name", "DOB", "SSN", "Address")}
         out.append({
-            "doc_id": d.doc_id, "title": ctx.doc_title(d), "type": d.type_name,
+            "doc_id": d.doc_id, "folder": d.folder, "title": ctx.doc_title(d), "type": d.type_name,
             "person": ctx.person_name(m["pid"]) or "Not readable",
+            "role": _role_text(ctx, d, m["pid"]),
             "name": st["Name"], "dob": st["DOB"], "ssn": st["SSN"], "address": st["Address"],
             "result": m["result"], "reasons": m["reasons"] or "",
             "path": None if redact else d.output_path,
@@ -359,30 +379,31 @@ def _sheet_document_check(ws: Worksheet, ctx: _Ctx, result: RunResult, rows_meta
     ws["A6"] = legend
     ws["A6"].font = F_SUB
     ws["A6"].alignment = Alignment(wrap_text=True, vertical="top")
-    ws.merge_cells("A6:L6")
+    ws.merge_cells("A6:M6")
     ws.row_dimensions[6].height = 30
 
-    headers = ["#", "Document (new file name - click to open)", "Document type", "Person", "Name", "Date of birth",
-               "SSN", "Home address", "Result", "What to review", "Original file", "Confidence"]
-    widths = [5, 50, 24, 20, 12, 12, 12, 12, 15, 62, 34, 11]
+    headers = ["#", "Document (new file name - click to open)", "Document type", "Person", "Role on document",
+               "Name", "Date of birth", "SSN", "Home address", "Result", "What to review", "Original file", "Confidence"]
+    widths = [5, 50, 24, 20, 26, 12, 12, 12, 12, 15, 62, 34, 11]
     order = {Status.ISSUE: 0, Status.CHECK: 1, Status.CORRECT: 2}
     rows_meta = sorted(rows_meta, key=lambda m: (order[m["result"]], ctx.person_name(m["pid"]) or "~", m["doc"].doc_id))
     rows = []
     for i, m in enumerate(rows_meta, start=1):
         d = m["doc"]
         rows.append([i, ctx.doc_title(d), d.type_name, ctx.person_name(m["pid"]) or "Not readable",
+                     _role_text(ctx, d, m["pid"]) or "-",
                      None, None, None, None, m["result"].value, m["reasons"] or "-",
                      ctx.sources(d), d.confidence if d.type_id else "-"])
     top = 8
-    _table(ws, top, headers, widths, rows, center_cols=(1, 5, 6, 7, 8, 9, 12), freeze_col=3)
+    _table(ws, top, headers, widths, rows, center_cols=(1, 6, 7, 8, 9, 10, 13), freeze_col=3)
     for i, m in enumerate(rows_meta, start=top + 1):
         d = m["doc"]
-        for col, f in zip((5, 6, 7, 8), ("Name", "DOB", "SSN", "Address")):
+        for col, f in zip((6, 7, 8, 9), ("Name", "DOB", "SSN", "Address")):
             c = m["checks"].get(f)
             st = c.status if c else Status.NOT_APPLICABLE
             _paint_status(ws.cell(row=i, column=col), st, SYMBOL[st])
-        _paint_status(ws.cell(row=i, column=9), m["result"])
-        ws.cell(row=i, column=12).number_format = "0%"
+        _paint_status(ws.cell(row=i, column=10), m["result"])
+        ws.cell(row=i, column=13).number_format = "0%"
         link = ctx.link(d)
         if link:
             cell = ws.cell(row=i, column=2)

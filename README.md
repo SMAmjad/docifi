@@ -10,7 +10,7 @@ for every document, whether the borrower's Name, Date of Birth, SSN and Address 
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6)
 ![Python](https://img.shields.io/badge/python-3.14-3776AB)
 ![Offline](https://img.shields.io/badge/runs-100%25%20offline-2FA05A)
-![Tests](https://img.shields.io/badge/tests-123%20passing-2FA05A)
+![Tests](https://img.shields.io/badge/tests-130%20passing-2FA05A)
 ![Version](https://img.shields.io/badge/version-1.0.0-1F3864)
 
 [Download](#download-and-run) · [What it does](#what-it-does) · [How it works](#how-it-works) ·
@@ -33,6 +33,7 @@ details are the same on every document. That is slow, repetitive and easy to get
 | # | Task | How DociFi handles it |
 |---|------|------------------------|
 | 1 | **Convert to PDF** | Images (JPG, PNG, TIFF, multi-page TIFF), Word (.docx/.doc via Word or LibreOffice) and text files become PDFs. PDFs are used as they are. |
+| 0 | **Several folders at once** | Choose any number of documents folders (Ctrl/Shift in Browse, or Browse again to add more). They are processed together in one run; each folder gets its own `documents/` and its own `Check_Sheet.xlsx` inside the run folder, and is checked on its own. |
 | 2 | **Split bulk scans** | Every page is read and recognised; pages are regrouped into documents (a 1040 package by tax year in the correct IRS page order, one W-2 per page, continuation pages kept with their document). Several ID cards on one scanned sheet are cut out individually. |
 | 3 | **Label documents** | Each document gets a file name built from the configured naming rules, e.g. `Jane - INCOME - W2 - Example LLC - 2024.pdf`, and is saved into a folder per person. |
 | 4 | **Check sheet** | An Excel workbook confirms **Name, Date of Birth, SSN and Address** for every document as *Correct*, *Issue* (documents disagree) or *Check manually* (could not be read with enough confidence), and says exactly which document to review and why. |
@@ -152,7 +153,7 @@ confidence. Anything below the configured threshold goes to the review queue ins
   second engine runs only when needed. Its models ship inside the package, so it never downloads anything.
 - **Engine first, UI second.** The same engine powers the desktop app and a command-line interface
   (`DociFi.exe run --input … --output …`), so it can be scripted, scheduled or wrapped in a service later.
-- **Tested.** 123 automated tests: unit tests, end-to-end tests with broken, locked, blank, Unicode-named and
+- **Tested.** 130 automated tests: unit tests, end-to-end tests with broken, locked, blank, Unicode-named and
   zipped files, and regression tests for every real-world problem found while auditing results against the page
   images. All test values are invented. Linted with Ruff.
 - **Reproducible build.** Pinned dependencies and a one-command build (`build_exe.py` + a PyInstaller spec)
@@ -191,7 +192,7 @@ These are measurements on one machine and one document set, not guarantees.
 | Word files | Microsoft Word (COM, pywin32) or LibreOffice (headless) | .docx/.doc to PDF |
 | Desktop UI | Qt 6 / PySide6 | Native Windows look, light and dark themes, vector-drawn branding |
 | Packaging | PyInstaller (single-file, custom spec) | One .exe, no installer |
-| Quality | pytest, Ruff | 123 tests, lint-clean |
+| Quality | pytest, Ruff | 130 tests, lint-clean |
 
 ## Project structure
 
@@ -206,7 +207,7 @@ These are measurements on one machine and one document set, not guarantees.
 │   │   ├── privacy.py          masking and redaction helpers
 │   │   ├── audit.py            JSONL audit trail without personal data
 │   │   └── secure_delete.py    guarded overwrite-and-delete of result folders
-│   ├── tests/                  123 tests (invented values only)
+│   ├── tests/                  130 tests (invented values only)
 │   ├── packaging/DociFi.spec   PyInstaller build definition
 │   └── scripts/                build_exe.py, make_icon.py, entry point
 └── docs/                       architecture, design decisions, images

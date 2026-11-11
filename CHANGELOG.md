@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Several documents folders in one run: choose any number of folders (multi-select in Browse, or add more);
+  one reading pass over all pages; each folder gets its own `documents/` and `Check_Sheet.xlsx` inside the run folder
+  and is checked on its own. A single folder keeps the original layout. CLI: `run --input <folder> <folder> ...`.
+- New "Role on document" column (app and check sheet): e.g. "Spouse - joint with ..." on a joint 1040, so it is
+  clear why one person appears on a document named after another.
+- Results folder defaults to the app's own `output` folder (Browse to choose any folder, Default to go back);
+  the documents folder list starts empty.
+- 130 automated tests.
+
 ## 1.0.0 — 2026-11-10
 
 First release.

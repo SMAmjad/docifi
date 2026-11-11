@@ -1,6 +1,6 @@
 """Command line entry point.
 
-    pcs run       --input <folder> --output <folder> [--guide <Guide 1.xlsx>] [--redact] [--workers N]
+    pcs run       --input <folder> [<folder> ...] --output <folder> [--guide <Guide 1.xlsx>] [--redact] [--workers N]
     pcs selftest  --guide <Guide 1.xlsx>
     pcs envcheck
     pcs secure-delete --folder <output folder>
@@ -38,7 +38,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     cfg = load_config(Path(args.config) if args.config else None)
     print(f"{APP_NAME} {__version__}")
     try:
-        result = run_pipeline(args.input, args.output, cfg=cfg, progress=_bar, workers=args.workers,
+        inputs = args.input if len(args.input) > 1 else args.input[0]
+        result = run_pipeline(inputs, args.output, cfg=cfg, progress=_bar, workers=args.workers,
                               redact=args.redact, guide_path=Path(args.guide) if args.guide else None)
     except PipelineError as exc:
         print(f"\nCannot start: {exc}")
@@ -57,7 +58,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     print("  Documents by type:")
     for t, n in sorted(s["documents_by_type"].items()):
         print(f"    {n:3d}  {t}")
-    print(f"\n  Check sheet: {result.sheet_path}")
+    for folder, sheet in (result.sheets.items() if result.sheets else [("", result.sheet_path)]):
+        print(f"\n  Check sheet{f' ({folder})' if folder else ''}: {sheet}")
     print(f"  Run folder:  {result.run_dir}")
     return 0
 
@@ -116,7 +118,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
 
     r = sub.add_parser("run", help="Process every file in a folder")
-    r.add_argument("--input", "-i", required=True, help="Folder with the documents (read only)")
+    r.add_argument("--input", "-i", required=True, nargs="+",
+                   help="Folder(s) with the documents (read only). Several folders = one run, one check sheet per folder")
     r.add_argument("--output", "-o", required=True, help="Folder for the results")
     r.add_argument("--guide", help="Optional Guide 1.xlsx to include the rule self-test in the check sheet")
     r.add_argument("--redact", action="store_true", default=None, help="Mask names, DOB and addresses in the sheet")

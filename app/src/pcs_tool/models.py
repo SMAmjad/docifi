@@ -156,3 +156,5 @@ class RunResult:
     duration_s: float = 0.0
     cancelled: bool = False
     stats: dict[str, Any] = field(default_factory=dict)
+    # Several documents folders in one run: folder name -> its own check sheet (empty for a single folder).
+    sheets: dict[str, Path] = field(default_factory=dict)

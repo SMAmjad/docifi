@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from PySide6.QtCore import QPointF, QRectF, QSettings, QSize, Qt, QThread, QTimer, QUrl
@@ -11,13 +12,13 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxLayout, QHeaderView, QLabel,
-    QLineEdit, QListWidget, QMainWindow, QMessageBox, QProgressBar, QPushButton, QScrollArea, QTableWidget,
+    QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox, QProgressBar, QPushButton, QScrollArea, QTableWidget,
     QTableWidgetItem, QTabWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
 from .. import APP_FULL_NAME, APP_NAME, APP_PUBLISHER, APP_TAGLINE, __version__
 from ..config import load_config
-from ..engine.pipeline import PipelineError, validate_folders
+from ..engine.pipeline import PipelineError, validate_inputs
 from ..models import RunResult
 from . import theme
 from .brand import paint_mark, paint_wordmark
@@ -44,6 +45,13 @@ def _hint(text: str) -> QLabel:
     lab.setProperty("class", "hint")
     lab.setWordWrap(True)
     return lab
+
+
+def default_output_dir() -> Path:
+    """The app's own 'output' folder: next to DociFi.exe, or the project root when run from source."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent / "output"
+    return Path(__file__).resolve().parents[4] / "output"
 
 
 def _open(path: Path) -> None:
@@ -95,6 +103,94 @@ class FolderRow(QWidget):
     def path(self) -> Path | None:
         t = self.edit.text().strip()
         return Path(t) if t else None
+
+
+def pick_folders(parent: QWidget, start: str = "") -> list[str]:
+    """Folder picker that allows choosing several folders at once (Ctrl / Shift + click).
+
+    The Windows folder dialog accepts only one folder, so Qt's own dialog is used with
+    multi-selection switched on in its folder list.
+    """
+    dlg = QFileDialog(parent, "Choose the documents folder(s) - hold Ctrl or Shift to choose several", start)
+    dlg.setFileMode(QFileDialog.FileMode.Directory)
+    dlg.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+    dlg.setOption(QFileDialog.Option.ShowDirsOnly, True)
+    for view in dlg.findChildren(QAbstractItemView):
+        if view.objectName() in ("listView", "treeView"):
+            view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+    dlg.resize(820, 520)
+    if not dlg.exec():
+        return []
+    chosen = [f for f in dlg.selectedFiles() if Path(f).is_dir()]
+    # With several folders selected Qt also returns the folder that was open (their parent): drop it.
+    if len(chosen) > 1:
+        chosen = [f for f in chosen if not any(Path(o) != Path(f) and Path(o).is_relative_to(Path(f)) for o in chosen)]
+    return chosen
+
+
+class InputFoldersRow(QWidget):
+    """'Documents folders': one or many folders, shown as a list; Browse adds, Remove takes out."""
+
+    def __init__(self, on_browse, on_change):
+        super().__init__()
+        self._on_change = on_change
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lab = QLabel("Documents folders")
+        lab.setFixedWidth(120)
+        lab.setStyleSheet("font-weight:600;")
+        lab.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        lab.setContentsMargins(0, 7, 0, 0)
+        self.list = QListWidget()
+        self.list.setObjectName("folderList")
+        self.list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.list.setFixedHeight(86)
+        self.list.setToolTip("The folders that will be processed together in one run. "
+                             "Each folder gets its own check sheet.")
+        btns = QVBoxLayout()
+        btns.setSpacing(6)
+        self.browse = QPushButton("Browse…")
+        self.browse.setToolTip("Add one or more folders (hold Ctrl or Shift to choose several)")
+        self.browse.clicked.connect(on_browse)
+        self.remove = QPushButton("Remove")
+        self.remove.setToolTip("Remove the selected folder(s) from the list")
+        self.remove.clicked.connect(self._remove_selected)
+        btns.addWidget(self.browse)
+        btns.addWidget(self.remove)
+        btns.addStretch(1)
+        lay.addWidget(lab)
+        lay.addWidget(self.list, 1)
+        lay.addLayout(btns)
+        self._refresh()
+
+    @property
+    def paths(self) -> list[Path]:
+        return [Path(self.list.item(i).data(Qt.ItemDataRole.UserRole)) for i in range(self.list.count())
+                if self.list.item(i).data(Qt.ItemDataRole.UserRole)]
+
+    def add(self, folders: list[str]) -> None:
+        have = {str(p.resolve()).lower() for p in self.paths}
+        for f in folders:
+            if str(Path(f).resolve()).lower() not in have:
+                have.add(str(Path(f).resolve()).lower())
+                it = QListWidgetItem(str(Path(f)))
+                it.setData(Qt.ItemDataRole.UserRole, str(Path(f)))
+                it.setToolTip(str(Path(f)))
+                self.list.addItem(it)
+        self._refresh()
+
+    def clear(self) -> None:
+        self.list.clear()
+        self._refresh()
+
+    def _remove_selected(self) -> None:
+        for it in self.list.selectedItems():
+            self.list.takeItem(self.list.row(it))
+        self._refresh()
+
+    def _refresh(self) -> None:
+        self.remove.setEnabled(bool(self.paths))
+        self._on_change()
 
 
 class MainWindow(QMainWindow):
@@ -177,13 +273,19 @@ class MainWindow(QMainWindow):
         lay.setSpacing(14)
 
         card, cl = _card("Step 1 - Choose folders")
-        self.input_row = FolderRow("Documents folder", "The folder with the borrower's files (PDF, Word, photos)",
-                                   self._browse_input)
+        self.input_row = InputFoldersRow(self._browse_input, lambda: None)
         self.output_row = FolderRow("Results folder", "Where the labeled documents and the check sheet will be saved",
                                     self._browse_output)
+        self.output_default_btn = QPushButton("Default")
+        self.output_default_btn.setToolTip(f"Use the app's own results folder:\n{default_output_dir()}")
+        self.output_default_btn.clicked.connect(self._use_default_output)
+        self.output_row.layout().addWidget(self.output_default_btn)
+        self.output_row.browse.setToolTip("Choose any folder on this PC for the results")
         cl.addWidget(self.input_row)
         cl.addWidget(self.output_row)
-        cl.addWidget(_hint("Your original files are never changed, moved or deleted. Sub-folders are included."))
+        cl.addWidget(_hint("Your original files are never changed, moved or deleted. Sub-folders are included. "
+                           "Several folders are processed together in one run; each gets its own folder and check "
+                           "sheet inside the results."))
         lay.addWidget(card)
 
         card, cl = _card("Step 2 - Options")
@@ -260,15 +362,30 @@ class MainWindow(QMainWindow):
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search document, person or reason…")
         self.search.textChanged.connect(self._apply_filter)
+        self.folder_filter = QComboBox()  # shown only when several folders were processed
+        self.folder_filter.setMinimumWidth(150)
+        self.folder_filter.currentIndexChanged.connect(self._apply_filter)
+        self.folder_label = QLabel("Folder:")
         bar.addWidget(QLabel("Show:"))
         bar.addWidget(self.filter)
+        bar.addWidget(self.folder_label)
+        bar.addWidget(self.folder_filter)
         bar.addWidget(self.search, 1)
         lay.addLayout(bar)
+        self.folder_label.hide()
+        self.folder_filter.hide()
 
-        self.table = QTableWidget(0, 9)
+        self.table = QTableWidget(0, 11)
         self.table.setHorizontalHeaderLabels(["Result", "Document (double-click to open)", "Type", "Person",
-                                              "Name", "Date of birth", "SSN", "Home address", "What to review"])
+                                              "Name", "Date of birth", "SSN", "Home address", "What to review",
+                                              "Folder", "Role on document"])
         hdr = self.table.horizontalHeader()
+        # Shown order: Result, Folder, Document, Type, Person, Role, Name ... (column numbers in code stay the same)
+        hdr.moveSection(9, 1)
+        hdr.moveSection(10, 5)
+        self.table.setColumnWidth(9, 120)
+        self.table.setColumnWidth(10, 230)
+        self.table.setColumnHidden(9, True)
         for c, width in enumerate((118, 320, 170, 130, 96, 96, 104, 104)):
             hdr.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
             self.table.setColumnWidth(c, width)
@@ -294,9 +411,9 @@ class MainWindow(QMainWindow):
         btns = QHBoxLayout()
         self.open_sheet_btn = QPushButton("Open Excel check sheet")
         self.open_sheet_btn.setObjectName("primary")
-        self.open_sheet_btn.clicked.connect(lambda: self.result and self.result.sheet_path and _open(self.result.sheet_path))
+        self.open_sheet_btn.clicked.connect(self._open_sheet)
         self.open_docs_btn = QPushButton("Open labeled documents")
-        self.open_docs_btn.clicked.connect(lambda: self.result and _open(self.result.run_dir / "documents"))
+        self.open_docs_btn.clicked.connect(self._open_documents)
         self.open_out_btn = QPushButton("Open results folder")
         self.open_out_btn.clicked.connect(lambda: self.result and _open(self.result.run_dir))
         self.delete_btn = QPushButton("Securely delete results…")
@@ -350,8 +467,7 @@ class MainWindow(QMainWindow):
         act(None, "Choose documents folder", self._browse_input, "Ctrl+O")
         act(None, "Choose results folder", self._browse_output, "Ctrl+Shift+O")
         self.act_start = act(None, "Start", self._start, "Ctrl+R")
-        self.act_sheet = act(None, "Open check sheet", lambda: self.result and self.result.sheet_path
-                             and _open(self.result.sheet_path), "Ctrl+E")
+        self.act_sheet = act(None, "Open check sheet", self._open_sheet, "Ctrl+E")
         self.act_folder = act(None, "Open results folder", lambda: self.result and _open(self.result.run_dir))
         act(None, "Process documents", lambda: self.tabs.setCurrentIndex(0), "Ctrl+1")
         act(None, "Results", lambda: self.tabs.isTabEnabled(1) and self.tabs.setCurrentIndex(1), "Ctrl+2")
@@ -383,8 +499,8 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Processing is running", "Please wait for the current run to finish, "
                                     "or cancel it first.")
             return
-        self.input_row.edit.clear()
-        self.output_row.edit.clear()
+        self.input_row.clear()
+        self._use_default_output()
         self.redact.setChecked(False)
         self.result = None
         self.output_root = None
@@ -430,29 +546,27 @@ class MainWindow(QMainWindow):
 
     def _set_tab_order(self) -> None:
         """Keyboard users move through the screen in reading order: step 1, step 2, step 3, then results."""
-        chain = [self.input_row.browse, self.output_row.browse, self.redact, self.selftest, self.guide_btn,
+        chain = [self.input_row.browse, self.input_row.remove, self.output_row.browse, self.output_default_btn, self.redact, self.selftest, self.guide_btn,
                  self.start_btn, self.cancel_btn, self.filter, self.search, self.table, self.open_sheet_btn,
                  self.open_docs_btn, self.open_out_btn, self.delete_btn]
         for a, b in zip(chain, chain[1:]):
             self.setTabOrder(a, b)
-        for edit in (self.input_row.edit, self.output_row.edit, self.guide_edit):
+        for edit in (self.output_row.edit, self.guide_edit):
             edit.setFocusPolicy(Qt.FocusPolicy.ClickFocus)  # read-only path boxes: chosen with Browse
         self.start_btn.setDefault(True)
 
     # ------------------------------------------------------------------ settings
     def _restore(self) -> None:
-        for row, key in ((self.input_row, "input"), (self.output_row, "output")):
-            v = self.settings.value(key, "")
-            if v and Path(v).exists():
-                row.edit.setText(v)
+        # Every start is clean: no documents folder is pre-filled, results go to the app's own folder.
+        for old in ("input", "inputs", "output"):
+            self.settings.remove(old)
+        self._use_default_output()
         g = self.settings.value("guide", "")
         if g and Path(g).exists():
             self.guide_edit.setText(g)
             self.selftest.setChecked(self.settings.value("selftest", "false") == "true")
 
     def _save(self) -> None:
-        self.settings.setValue("input", self.input_row.edit.text())
-        self.settings.setValue("output", self.output_row.edit.text())
         self.settings.setValue("guide", self.guide_edit.text())
         self.settings.setValue("selftest", "true" if self.selftest.isChecked() else "false")
 
@@ -467,17 +581,18 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ browsing
     def _browse_input(self) -> None:
-        d = QFileDialog.getExistingDirectory(self, "Choose the documents folder", self.input_row.edit.text())
-        if d:
-            self.input_row.edit.setText(d)
-            if not self.output_row.edit.text():
-                p = Path(d)
-                self.output_row.edit.setText(str(p.parent / f"{p.name} - Results"))
+        have = self.input_row.paths
+        chosen = pick_folders(self, str(have[-1].parent) if have else "")
+        if chosen:
+            self.input_row.add(chosen)
 
     def _browse_output(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "Choose the results folder", self.output_row.edit.text())
         if d:
-            self.output_row.edit.setText(d)
+            self.output_row.edit.setText(str(Path(d)))
+
+    def _use_default_output(self) -> None:
+        self.output_row.edit.setText(str(default_output_dir()))
 
     def _browse_guide(self) -> None:
         f, _ = QFileDialog.getOpenFileName(self, "Choose the guide/rules file", self.guide_edit.text(),
@@ -501,12 +616,17 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ run
     def _start(self) -> None:
-        inp, out = self.input_row.path, self.output_row.path
+        inp, out = self.input_row.paths, self.output_row.path
         if not inp or not out:
-            QMessageBox.information(self, "Choose folders", "Please choose both the documents folder and the results folder.")
+            QMessageBox.information(self, "Choose folders", "Please choose the documents folder(s) and the results folder.")
+            return
+        missing = [p for p in inp if not p.is_dir()]
+        if missing:
+            QMessageBox.warning(self, "Cannot start", f"This folder no longer exists:\n{missing[0]}\n\n"
+                                "Remove it from the list and try again.")
             return
         try:
-            validate_folders(inp, out)
+            validate_inputs(inp, out)
         except PipelineError as exc:
             QMessageBox.warning(self, "Cannot start", str(exc))
             return
@@ -521,7 +641,7 @@ class MainWindow(QMainWindow):
         self._set_running(True)
         self.output_root = out
         self.thread = QThread(self)
-        self.worker = PipelineWorker(inp, out, self.redact.isChecked(), guide)
+        self.worker = PipelineWorker(inp if len(inp) > 1 else inp[0], out, self.redact.isChecked(), guide)
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
         self.worker.progress.connect(self._on_progress)
@@ -541,6 +661,7 @@ class MainWindow(QMainWindow):
         self.cancel_btn.setEnabled(running)
         self.input_row.setEnabled(not running)
         self.output_row.setEnabled(not running)
+        self.output_default_btn.setEnabled(not running)
         self.redact.setEnabled(not running)
         self.selftest.setEnabled(not running)
         self.guide_btn.setEnabled(not running)
@@ -605,6 +726,19 @@ class MainWindow(QMainWindow):
         self.kpi["people"].setText(str(s["people"]))
         self.table.setRowCount(len(rows))
         self._rows = rows
+        multi = len(result.sheets) > 1
+        self.table.setColumnHidden(9, not multi)
+        self.folder_filter.blockSignals(True)
+        self.folder_filter.clear()
+        self.folder_filter.addItems(["All folders"] + list(result.sheets))
+        self.folder_filter.blockSignals(False)
+        self.folder_label.setVisible(multi)
+        self.folder_filter.setVisible(multi)
+        self.open_sheet_btn.setText("Open Excel check sheet" + (" ▾" if multi else ""))
+        self.open_docs_btn.setText("Open labeled documents" + (" ▾" if multi else ""))
+        tip = "Opens the folder of the selected row (or the Folder filter); otherwise choose the folder from a list."
+        self.open_sheet_btn.setToolTip(tip if multi else "")
+        self.open_docs_btn.setToolTip(tip if multi else "")
         for r, row in enumerate(rows):
             res = row["result"].value
             values = [res, row["title"], row["type"], row["person"]]
@@ -620,6 +754,10 @@ class MainWindow(QMainWindow):
                 it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.table.setItem(r, c, it)
             self.table.setItem(r, 8, QTableWidgetItem(row["reasons"].replace("• ", "").replace("\n", "  •  ")))
+            self.table.setItem(r, 9, QTableWidgetItem(row.get("folder") or ""))
+            role = QTableWidgetItem(row.get("role") or "")
+            role.setToolTip(row.get("role") or "")
+            self.table.setItem(r, 10, role)
             self.table.item(r, 1).setToolTip(row["title"])
             self.table.item(r, 8).setToolTip(row["reasons"] or "Nothing to review.")
         self._apply_filter()
@@ -636,11 +774,15 @@ class MainWindow(QMainWindow):
 
     def _apply_filter(self) -> None:
         want = self.filter.currentText()
+        folder = self.folder_filter.currentText() if not self.folder_filter.isHidden() else ""
         q = self.search.text().strip().lower()
         for r, row in enumerate(getattr(self, "_rows", [])):
             show = (want == "Everything" or row["result"].value == want)
+            if folder and folder != "All folders":
+                show &= row.get("folder") == folder
             if q:
-                show &= q in " ".join([row["title"], row["type"], row["person"], row["reasons"]]).lower()
+                show &= q in " ".join([row["title"], row["type"], row["person"], row.get("role", ""),
+                                       row["reasons"]]).lower()
             self.table.setRowHidden(r, not show)
 
     def _show_details(self) -> None:
@@ -649,8 +791,51 @@ class MainWindow(QMainWindow):
             return
         row = self._rows[min(rows)]
         reasons = row["reasons"].replace("\n", "<br>") or "Nothing to review - every value matches the person's other documents."
-        self.details.setText(f"<b>{row['title']}</b> &nbsp;·&nbsp; {row['type']} &nbsp;·&nbsp; {row['person']} "
+        role = f" ({row['role']})" if row.get("role") else ""
+        self.details.setText(f"<b>{row['title']}</b> &nbsp;·&nbsp; {row['type']} &nbsp;·&nbsp; {row['person']}{role} "
                              f"&nbsp;·&nbsp; <b>{row['result'].value}</b><br>{reasons}")
+
+    def _chosen_folder(self) -> str | None:
+        """Several folders: the folder of the selected row, else the one chosen in the Folder filter."""
+        sel = {i.row() for i in self.table.selectedItems()}
+        if sel and getattr(self, "_rows", None):
+            return self._rows[min(sel)].get("folder") or None
+        if self.result and self.folder_filter.currentText() in self.result.sheets:
+            return self.folder_filter.currentText()
+        return None
+
+    def _for_folder(self, button: QPushButton, action) -> None:
+        """Run ``action(folder)`` for the selected folder; with none selected, let the user pick one from a menu."""
+        folder = self._chosen_folder()
+        if folder:
+            action(folder)
+            return
+        menu = QMenu(self)
+        for name in self.result.sheets:
+            menu.addAction(name, lambda n=name: action(n))
+        menu.exec(button.mapToGlobal(button.rect().bottomLeft()))
+
+    def _open_sheet(self) -> None:
+        """One folder: its check sheet. Several: the chosen folder's check sheet."""
+        if not self.result:
+            return
+        if len(self.result.sheets) > 1:
+            self._for_folder(self.open_sheet_btn, lambda f: _open(self.result.sheets[f]))
+        elif self.result.sheet_path:
+            _open(self.result.sheet_path)
+
+    def _open_documents(self) -> None:
+        """One folder: run/documents. Several: the chosen folder's documents."""
+        if not self.result:
+            return
+        if len(self.result.sheets) > 1:
+            def go(folder: str) -> None:
+                target = self.result.run_dir / folder / "documents"
+                _open(target if target.exists() else self.result.run_dir / folder)
+            self._for_folder(self.open_docs_btn, go)
+        else:
+            target = self.result.run_dir / "documents"
+            _open(target if target.exists() else self.result.run_dir)
 
     def _open_row(self, r: int, _c: int) -> None:
         path = self._rows[r].get("path") if hasattr(self, "_rows") else None
